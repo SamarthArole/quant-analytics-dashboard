@@ -86,6 +86,9 @@ Rolling correlation between BTC and ETH prices is computed to observe time-varyi
 ### ADF Stationarity Test
 An Augmented Dickey–Fuller test is provided to assess whether the constructed spread exhibits stationarity, which is critical for mean-reversion strategies.
 
+### Mean-Reversion Mini Backtest
+A simple illustrative backtest is included using z-score based entry (|z| > threshold) and exit (z → 0) rules on the spread. The backtest is intended for signal validation and research intuition rather than performance evaluation.
+
 ---
 
 ## Live Analytics Behavior

@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
+from analytics.backtest import mean_reversion_backtest
 from storage.datastore import MarketDataStore
 from ingestion.binance_ws import BinanceWebSocketIngestor
 from resampling.sampler import Resampler
@@ -45,8 +46,8 @@ st.write("Live data ingestion and aggregation running in background.")
 
 
 st.sidebar.header("Analytics Controls")
-timeframe = st.sidebar.selectbox("Timeframe", ["1s", "1m", "5m"])
-window = st.sidebar.slider("Rolling Window", 10, 100, 30)
+timeframe = st.sidebar.selectbox("Timeframe", ["1s", "1m", "5m"], index=2)
+window = st.sidebar.slider("Rolling Window", 10, 100, 50)
 refresh = st.sidebar.button("Refresh Analytics")
 
 
@@ -93,33 +94,6 @@ if "df" not in st.session_state:
 df = st.session_state["df"]
 hedge = st.session_state["hedge"]
 
-
-st.subheader("Prices")
-st.plotly_chart(
-    px.line(df, x="ts", y=["close_btc", "close_eth"]),
-    use_container_width=True
-)
-
-
-st.subheader("Spread & Z-Score")
-st.plotly_chart(
-    px.line(df, x="ts", y=["spread", "zscore"]),
-    use_container_width=True
-)
-
-
-st.subheader("Rolling Correlation")
-st.plotly_chart(
-    px.line(df, x="ts", y="corr"),
-    use_container_width=True
-)
-
-
-latest_z = df["zscore"].iloc[-1]
-if abs(latest_z) > 2:
-    st.error(f"Z-score alert triggered: {latest_z:.2f}")
-
-
 st.subheader("Stationarity Test (ADF)")
 
 if st.button("Run ADF Test on Spread"):
@@ -139,6 +113,81 @@ if st.button("Run ADF Test on Spread"):
     else:
         st.warning("Not stationary at 5% significance")
 
+
+st.subheader("Quick Data Checks")
+
+if st.button("Show Latest BTC Ticks"):
+    ticks = datastore.get_ticks("btcusdt", 20)
+    st.dataframe(ticks)
+
+if st.button("Show Latest 1m BTC OHLC"):
+    bars = datastore.con.execute(
+        """
+        SELECT *
+        FROM ohlc
+        WHERE symbol='btcusdt' AND timeframe='1m'
+        ORDER BY ts DESC
+        LIMIT 5
+        """
+    ).fetchdf()
+    st.dataframe(bars)
+
+st.subheader("Mean-Reversion Mini Backtest")
+
+entry_z = st.slider("Entry Z-Score", 1.5, 3.0, 2.0, step=0.1)
+exit_z = 0.0
+
+if st.button("Run Backtest"):
+    trades, equity = mean_reversion_backtest(
+        df,
+        entry_z=entry_z,
+        exit_z=exit_z
+    )
+
+    if trades.empty:
+        st.warning("No trades generated for current parameters.")
+    else:
+        st.metric("Total Trades", len(trades))
+        st.metric("Total PnL (Spread Units)", round(trades["pnl"].sum(), 4))
+        st.metric("Win Rate", f"{(trades['pnl'] > 0).mean() * 100:.1f}%")
+
+        st.subheader("Equity Curve")
+        st.line_chart(equity)
+
+        st.subheader("Trade Log")
+        st.dataframe(trades)
+
+
+st.subheader("Analytics Overview")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown("### Prices")
+    st.plotly_chart(
+        px.line(df, x="ts", y=["close_btc", "close_eth"]),
+        use_container_width=True
+    )
+
+with col2:
+    st.markdown("### Spread & Z-Score")
+    st.plotly_chart(
+        px.line(df, x="ts", y=["spread", "zscore"]),
+        use_container_width=True
+    )
+
+col3, col4 = st.columns(2)
+
+with col3:
+    st.markdown("### Rolling Correlation")
+    st.plotly_chart(
+        px.line(df, x="ts", y="corr"),
+        use_container_width=True
+    )
+
+with col4:
+    st.markdown("### (Reserved)")
+    st.info("Space reserved for future analytics")
 
 st.subheader("Data Export")
 
@@ -175,22 +224,3 @@ st.download_button(
     file_name=f"ohlc_{timeframe}.csv",
     mime="text/csv"
 )
-
-
-st.subheader("Quick Data Checks")
-
-if st.button("Show Latest BTC Ticks"):
-    ticks = datastore.get_ticks("btcusdt", 20)
-    st.dataframe(ticks)
-
-if st.button("Show Latest 1m BTC OHLC"):
-    bars = datastore.con.execute(
-        """
-        SELECT *
-        FROM ohlc
-        WHERE symbol='btcusdt' AND timeframe='1m'
-        ORDER BY ts DESC
-        LIMIT 5
-        """
-    ).fetchdf()
-    st.dataframe(bars)
