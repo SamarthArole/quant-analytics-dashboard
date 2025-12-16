@@ -169,6 +169,12 @@ All final implementation decisions and code integration were reviewed and contro
 
 ---
 
+## Architecture Diagram
+```bash
+https://app.eraser.io/workspace/3LnZsg8TNgzZqkEhP545?origin=share
+---
+```
+
 ## Author
 
 **Samarth Arole**
