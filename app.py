@@ -10,6 +10,7 @@ from resampling.sampler import Resampler
 from analytics.stats import compute_returns, rolling_volatility
 from analytics.hedge import ols_hedge_ratio, compute_spread, compute_zscore
 from analytics.correlation import rolling_correlation
+from analytics.stationarity import adf_test
 
 
 st.set_page_config(page_title="Quant Dashboard", layout="wide")
@@ -69,7 +70,6 @@ if st.button("Check latest BTC ticks"):
     st.dataframe(df_ticks)
 
 
-
 btc = datastore.con.execute(
     """
     SELECT ts, close
@@ -99,6 +99,24 @@ df["spread"] = compute_spread(df["close_btc"], df["close_eth"], hedge)
 df["zscore"] = compute_zscore(df["spread"], window)
 df["corr"] = rolling_correlation(df["close_btc"], df["close_eth"], window)
 
+st.subheader("Stationarity Test (ADF)")
+
+if st.button("Run ADF Test on Spread"):
+    res = adf_test(df["spread"])
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.metric("ADF Statistic", f"{res['adf_stat']:.4f}")
+        st.metric("p-value", f"{res['p_value']:.4f}")
+
+    with c2:
+        st.write(f"Lags used: {res['lags']}")
+        st.write(f"Observations: {res['n_obs']}")
+
+    if res["p_value"] < 0.05:
+        st.success("Likely stationary (mean-reverting)")
+    else:
+        st.warning("Not stationary at 5% significance")
 
 st.subheader("Prices")
 st.plotly_chart(
