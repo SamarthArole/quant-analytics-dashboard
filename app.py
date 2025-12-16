@@ -1,19 +1,17 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import time
 
 from storage.datastore import MarketDataStore
 from ingestion.binance_ws import BinanceWebSocketIngestor
 from resampling.sampler import Resampler
 
-from analytics.stats import compute_returns, rolling_volatility
 from analytics.hedge import ols_hedge_ratio, compute_spread, compute_zscore
 from analytics.correlation import rolling_correlation
 from analytics.stationarity import adf_test
 
 
-st.set_page_config(page_title="Quant Dashboard", layout="wide")
+st.set_page_config(page_title="Quant Analytics Dashboard", layout="wide")
 
 
 @st.cache_resource
@@ -26,7 +24,6 @@ def start_ingestion():
     ingestor.start()
     return datastore
 
-# st.sidebar.checkbox("Live mode", value=True, key="live")
 
 datastore = start_ingestion()
 resampler = Resampler(datastore)
@@ -44,60 +41,84 @@ run_resampling()
 
 
 st.title("Quant Analytics Dashboard")
-st.write("Data ingestion running in background...")
+st.write("Live data ingestion and aggregation running in background.")
 
 
 st.sidebar.header("Analytics Controls")
 timeframe = st.sidebar.selectbox("Timeframe", ["1s", "1m", "5m"])
 window = st.sidebar.slider("Rolling Window", 10, 100, 30)
+refresh = st.sidebar.button("Refresh Analytics")
 
 
-if st.button("Show 1m BTC bars"):
-    df_bars = datastore.con.execute(
+if refresh or "analytics_loaded" not in st.session_state:
+    st.session_state["analytics_loaded"] = True
+
+    btc = datastore.con.execute(
         """
-        SELECT *
+        SELECT ts, close
         FROM ohlc
-        WHERE symbol='btcusdt' AND timeframe='1m'
-        ORDER BY ts DESC
-        LIMIT 5
-        """
+        WHERE symbol='btcusdt' AND timeframe=?
+        ORDER BY ts
+        """,
+        [timeframe]
     ).fetchdf()
-    st.dataframe(df_bars)
+
+    eth = datastore.con.execute(
+        """
+        SELECT ts, close
+        FROM ohlc
+        WHERE symbol='ethusdt' AND timeframe=?
+        ORDER BY ts
+        """,
+        [timeframe]
+    ).fetchdf()
+
+    if not btc.empty and not eth.empty:
+        df = btc.merge(eth, on="ts", suffixes=("_btc", "_eth"))
+
+        hedge = ols_hedge_ratio(df["close_btc"], df["close_eth"])
+        df["spread"] = compute_spread(df["close_btc"], df["close_eth"], hedge)
+        df["zscore"] = compute_zscore(df["spread"], window)
+        df["corr"] = rolling_correlation(df["close_btc"], df["close_eth"], window)
+
+        st.session_state["df"] = df
+        st.session_state["hedge"] = hedge
 
 
-if st.button("Check latest BTC ticks"):
-    df_ticks = datastore.get_ticks("btcusdt", 50)
-    st.dataframe(df_ticks)
+if "df" not in st.session_state:
+    st.warning("Waiting for sufficient data to compute analytics.")
+    st.stop()
 
 
-btc = datastore.con.execute(
-    """
-    SELECT ts, close
-    FROM ohlc
-    WHERE symbol='btcusdt' AND timeframe=?
-    ORDER BY ts
-    """,
-    [timeframe]
-).fetchdf()
-
-eth = datastore.con.execute(
-    """
-    SELECT ts, close
-    FROM ohlc
-    WHERE symbol='ethusdt' AND timeframe=?
-    ORDER BY ts
-    """,
-    [timeframe]
-).fetchdf()
+df = st.session_state["df"]
+hedge = st.session_state["hedge"]
 
 
-df = btc.merge(eth, on="ts", suffixes=("_btc", "_eth"))
+st.subheader("Prices")
+st.plotly_chart(
+    px.line(df, x="ts", y=["close_btc", "close_eth"]),
+    use_container_width=True
+)
 
 
-hedge = ols_hedge_ratio(df["close_btc"], df["close_eth"])
-df["spread"] = compute_spread(df["close_btc"], df["close_eth"], hedge)
-df["zscore"] = compute_zscore(df["spread"], window)
-df["corr"] = rolling_correlation(df["close_btc"], df["close_eth"], window)
+st.subheader("Spread & Z-Score")
+st.plotly_chart(
+    px.line(df, x="ts", y=["spread", "zscore"]),
+    use_container_width=True
+)
+
+
+st.subheader("Rolling Correlation")
+st.plotly_chart(
+    px.line(df, x="ts", y="corr"),
+    use_container_width=True
+)
+
+
+latest_z = df["zscore"].iloc[-1]
+if abs(latest_z) > 2:
+    st.error(f"Z-score alert triggered: {latest_z:.2f}")
+
 
 st.subheader("Stationarity Test (ADF)")
 
@@ -118,29 +139,58 @@ if st.button("Run ADF Test on Spread"):
     else:
         st.warning("Not stationary at 5% significance")
 
-st.subheader("Prices")
-st.plotly_chart(
-    px.line(df, x="ts", y=["close_btc", "close_eth"]),
-    use_container_width=True
+
+st.subheader("Data Export")
+
+export_analytics = df[[
+    "ts",
+    "close_btc",
+    "close_eth",
+    "spread",
+    "zscore",
+    "corr"
+]].copy()
+
+export_ohlc = datastore.con.execute(
+    """
+    SELECT *
+    FROM ohlc
+    WHERE timeframe=?
+    ORDER BY ts
+    """,
+    [timeframe]
+).fetchdf()
+
+
+st.download_button(
+    label="Download Analytics CSV",
+    data=export_analytics.to_csv(index=False),
+    file_name=f"analytics_{timeframe}.csv",
+    mime="text/csv"
 )
 
-st.subheader("Spread & Z-Score")
-st.plotly_chart(
-    px.line(df, x="ts", y=["spread", "zscore"]),
-    use_container_width=True
-)
-
-st.subheader("Rolling Correlation")
-st.plotly_chart(
-    px.line(df, x="ts", y="corr"),
-    use_container_width=True
+st.download_button(
+    label="Download OHLC CSV",
+    data=export_ohlc.to_csv(index=False),
+    file_name=f"ohlc_{timeframe}.csv",
+    mime="text/csv"
 )
 
 
-latest_z = df["zscore"].iloc[-1]
-if abs(latest_z) > 2:
-    st.error(f"Z-score alert triggered: {latest_z:.2f}")
+st.subheader("Quick Data Checks")
 
-# if st.session_state.get("live"):
-#     time.sleep(1)
-#     st.rerun()
+if st.button("Show Latest BTC Ticks"):
+    ticks = datastore.get_ticks("btcusdt", 20)
+    st.dataframe(ticks)
+
+if st.button("Show Latest 1m BTC OHLC"):
+    bars = datastore.con.execute(
+        """
+        SELECT *
+        FROM ohlc
+        WHERE symbol='btcusdt' AND timeframe='1m'
+        ORDER BY ts DESC
+        LIMIT 5
+        """
+    ).fetchdf()
+    st.dataframe(bars)
