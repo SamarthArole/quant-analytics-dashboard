@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+data/market.duckdb
+data/market.duckdb.wal
+.streamlit/
+.env
